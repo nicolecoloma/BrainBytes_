@@ -19,16 +19,7 @@
 
 ---
 
-# Screenshots
 
-| **Screenshot**                     | **Source**                | **Saved Copy** |
-| ---------------------------------- | ------------------------- | -------------- |
-| Successful GitHub Actions workflow | GitHub Actions Run        | Google Drive   |
-| Test Results                       | GitHub Actions Job Output | Google Drive   |
-| ESLint Report                      | GitHub Actions Lint Job   | Google Drive   |
-| Railway Dashboard                  | Railway Project Dashboard | Google Drive   |
-
-> Replace **GitHub Actions Run**, **Google Drive**, and **Railway Project Dashboard** with your actual repository or shared links if needed.
 
 ---
 
