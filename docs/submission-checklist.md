@@ -4,7 +4,7 @@
 
 | **Requirement**                           | **Status** | **Location**                                      |
 | ----------------------------------------- | :--------: | ------------------------------------------------- |
-| GitHub repository with automated tests    |      ✅     | `https://github.com/grahamcrackers123/BrainBytes` |
+| GitHub repository with automated tests    |      ✅     | `(https://github.com/nicolecoloma/BrainBytes_)` |
 | Enhanced frontend and backend test suites |      ✅     | `frontend/tests/`, `backend/tests/` (51 tests)    |
 | Main GitHub Actions workflow              |      ✅     | `.github/workflows/main.yml`                      |
 | Railway deployment workflow               |      ✅     | `.github/workflows/deploy-railway.yml`            |
