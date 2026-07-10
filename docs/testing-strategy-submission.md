@@ -170,11 +170,9 @@ End-to-end testing validates application behavior in a production-like environme
 
 ---
 
-# Test Case Documentation
 
-Google Sheets Test Case Documentation:
 
-`https://docs.google.com/spreadsheets/d/15uumvTSb1GOcKCbzwK3jUMX8HuxDy462Z5mnFjB-_Qk`
+
 
 ---
 
