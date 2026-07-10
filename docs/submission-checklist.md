@@ -56,9 +56,9 @@
 
 | **Resource**               | **Location**                                                                                     |
 | -------------------------- | ------------------------------------------------------------------------------------------------ |
-| GitHub Repository          | `https://github.com/grahamcrackers123/BrainBytes`                                                |
+| GitHub Repository          | `https://github.com/nicolecoloma/BrainBytes_`                                                |
 | Latest Successful Workflow | GitHub Actions → Latest Successful Run                                                           |
-| CI/CD Status Badge         | `![CI/CD](https://github.com/grahamcrackers123/BrainBytes/actions/workflows/main.yml/badge.svg)` |
+| CI/CD Status Badge         | `![CI/CD]` |
 
 ---
 
