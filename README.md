@@ -2,7 +2,7 @@
 
 Project Overview
 
-BrainBytes is an AI-driven tutoring platform created to make quality academic support more accessible to Filipino students. The project is built using modern DevOps methodologies and containerization technologies to ensure scalability, reliability, and efficient deployment.
+BrainBytes is an AI-driven tutoring platform designed to provide accessible, personalized, and interactive learning support for Filipino students. The platform leverages artificial intelligence to deliver real-time academic assistance, helping learners understand difficult concepts, receive instant feedback, and develop stronger study habits regardless of their location or learning environment.
 
 Team Member
 
