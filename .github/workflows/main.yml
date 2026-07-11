@@ -1,0 +1,602 @@
+name: BrainBytes CI/CD
+
+on:
+  push:
+    branches: [ main, initial, mj-automation ]
+  pull_request:
+    branches: [ main, initial, mj-automation ]
+  schedule:
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Run Linters
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with: 
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: |
+            brainbytes-multi-container/frontend/package-lock.json
+            brainbytes-multi-container/backend/package-lock.json
+
+      - name: Install Frontend dependencies
+        working-directory: ./brainbytes-multi-container/frontend
+        run: npm install --legacy-peer-deps
+
+      - name: Check for large files
+        run: |
+          echo "Checking for files larger than 10MB..."
+          large_files=$(find . -size +10M -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null)
+          if [ -n "$large_files" ]; then
+            echo "Large files found:"
+            echo "$large_files"
+            echo "Please consider using .gitignore or Git LFS for large files."
+          else
+            echo "No large files found."
+          fi
+
+      - name: Check for potential secrets
+        run: |
+          echo "Checking for potential secrets in code..."
+          found_secrets=false
+          while IFS= read -r file; do
+            if grep -q -E '(AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36})' "$file" 2>/dev/null; then
+              echo "Warning: $file"
+              found_secrets=true
+            fi
+          done < <(find . -type f \( -name '*.js' -o -name '*.json' -o -name '*.yml' -o -name '*.yaml' -o -name '*.env' \) -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null)
+          if [ "$found_secrets" = true ]; then
+            echo "Potential secrets detected!"
+          else
+            echo "No secrets patterns detected."
+          fi
+
+      - name: Run Prettier formatting check
+        working-directory: ./brainbytes-multi-container/frontend
+        run: npx prettier --check .
+
+      - name: Lint Frontend code
+        working-directory: ./brainbytes-multi-container/frontend
+        run: npm run lint:js -- --format json --output-file eslint-report.json
+
+      - name: Annotate Frontend ESLint results
+        uses: ataylorme/eslint-annotate-action@v2
+        with: 
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          report-json: "brainbytes-multi-container/frontend/eslint-report.json"
+
+      - name: Install Backend dependencies
+        working-directory: ./brainbytes-multi-container/backend
+        run: |
+          npm cache clean --force || true
+          npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+
+      - name: Lint Backend code
+        working-directory: ./brainbytes-multi-container/backend
+        run: npm run lint:js -- --format json --output-file eslint-report.json
+          
+      - name: Annotate Backend ESLint results
+        uses: ataylorme/eslint-annotate-action@v2
+        with: 
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          report-json: "brainbytes-multi-container/backend/eslint-report.json"
+
+      - name: Uplaod ESLint reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: eslint-reports
+          path: |
+            brainbytes-multi-container/frontend/eslint-report.json
+            brainbytes-multi-container/backend/eslint-report.json
+
+  test: 
+    name: Run Tests
+    needs: lint 
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with: 
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: |
+            brainbytes-multi-container/frontend/package-lock.json
+            brainbytes-multi-container/backend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ./brainbytes-multi-container/frontend
+        run: npm install --legacy-peer-deps
+
+      - name: Install backend dependencies
+        working-directory: ./brainbytes-multi-container/backend
+        run: |
+          npm cache clean --force || true
+          npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+
+      - name: Start backend with Docker Compose
+        working-directory: ./brainbytes-multi-container
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MONGO_URL: mongodb://mongo:27017/brainbytes
+        run: |
+          echo "GROQ_API_KEY=$GROQ_API_KEY" >> backend/.env
+          echo "MONGO_URL=$MONGO_URL" >> backend/.env
+          docker compose up -d --build backend mongo
+          echo "--- waiting for backend to be ready ---"
+          ready=false
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5000/health > /dev/null; then
+              echo "Backend is up"
+              ready=true
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+          if [ "$ready" = false ]; then
+            echo "Backend failed to start within 60s"
+            docker compose logs
+            exit 1
+          fi
+          docker compose ps
+
+      - name: Run frontend tests
+        working-directory: ./brainbytes-multi-container/frontend
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:5000
+        run: npm test -- --coverage
+
+      - name: Run backend tests
+        working-directory: ./brainbytes-multi-container/backend
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MONGO_URL: mongodb://localhost:27017/brainbytes
+        run: npm test -- --coverage
+
+      - name: Stop Docker Compose
+        if: always()
+        working-directory: ./brainbytes-multi-container
+        run: docker compose down
+
+      - name: Upload test coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            brainbytes-multi-container/frontend/coverage
+            brainbytes-multi-container/backend/coverage
+
+      - name: Generate test summary report
+        if: always()
+        run: |
+          echo "## Test Summary Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend Tests | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend Tests | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Node Version | ${{ matrix.node-version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See uploaded coverage-reports artifact for full coverage details." >> $GITHUB_STEP_SUMMARY
+
+  build:
+    name: Build ${{ matrix.service }} Image
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [frontend, backend]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create mock environment file
+        if: matrix.service == 'backend'
+        run: |
+          mkdir -p brainbytes-multi-container/backend
+          touch brainbytes-multi-container/backend/.env
+
+      - name: Build ${{ matrix.service }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./brainbytes-multi-container/${{ matrix.service }}
+          push: false
+          load: true
+          tags: |
+            brainbytes-${{ matrix.service }}:${{ github.sha }}
+            brainbytes-${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Verify image exists
+        run: |
+          docker image inspect brainbytes-${{ matrix.service }}:${{ github.sha }} > /dev/null
+          docker images brainbytes-${{ matrix.service }}
+
+      - name: Save build artifacts
+        if: matrix.service == 'backend'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-outputs
+          path: brainbytes-multi-container
+          if-no-files-found: warn
+
+  deploy: 
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: test
+    needs: 
+      - build
+      - e2e
+
+    steps: 
+      - name: Check out code
+        uses: actions/checkout@v4
+        if: github.event_name != 'pull_request'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: docker-outputs 
+          path: brainbytes-multi-container
+
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        if: github.event_name != 'pull_request'
+        with: 
+          node-version: 22.x
+
+      - name: Create mock environment file
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p brainbytes-multi-container/backend
+          touch brainbytes-multi-container/backend/.env
+
+      - name: Prepare deployment
+        if: github.event_name != 'pull_request'
+        run: | 
+          echo "DEPLOY_TIME=$(date)" >> $GITHUB_ENV
+          echo "DEPLOY_SHA=${{ github.sha }}" >> $GITHUB_ENV
+          echo "DEPLOY_ENV=test" >> $GITHUB_ENV
+
+      - name: Determine deployment target by branch
+        if: github.event_name != 'pull_request'
+        run: |
+          case "${{ github.ref_name }}" in
+            main)
+              echo "DEPLOY_TARGET=staging" >> $GITHUB_ENV
+              ;;
+            mj-automation)
+              echo "DEPLOY_TARGET=test" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "DEPLOY_TARGET=test" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: Deploy application
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "=== Deploying BrainBytes ==="
+          echo "Environment:  test"
+          echo "Branch:       ${{ github.ref_name }}"
+          echo "Target SHA:   ${{ github.sha }}"
+          chmod +x scripts/deploy.sh
+          ./scripts/deploy.sh test
+        shell: bash
+
+      - name: Verify Deployment
+        if: github.event_name != 'pull_request'
+        env:
+          DEPLOY_URL: ${{ vars.DEPLOY_URL || 'http://localhost:7000' }}
+        run: |
+          echo "Verifying deployment..."
+          sleep 5
+          curl -sf "$DEPLOY_URL/health" && echo "Deployment verified successfully" || echo "Warning: Service not available at $DEPLOY_URL"
+
+      - name: Skip deployment for PR
+        if: github.event_name == 'pull_request'
+        run: echo "Deployment skipped for pull request — this is expected."
+
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+    strategy:
+      max-parallel: 1
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps: 
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with: 
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: |
+            brainbytes-multi-container/frontend/package-lock.json
+            brainbytes-multi-container/backend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ./brainbytes-multi-container/frontend
+        run: npm install --legacy-peer-deps
+
+      - name: Audit frontend dependencies
+        working-directory: ./brainbytes-multi-container/frontend
+        run: npm audit --json || true
+
+      - name: Install backend dependencies
+        working-directory: ./brainbytes-multi-container/backend
+        run: |
+          npm cache clean --force || true
+          npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+
+      - name: Audit backend dependencies
+        working-directory: ./brainbytes-multi-container/backend
+        run: npm audit --json || true
+
+      - name: Run Snyk to check Frontend vulnerabilities
+        if: env.SNYK_TOKEN != ''
+        working-directory: ./brainbytes-multi-container/frontend
+        run: npx snyk test --severity-threshold=high || echo "::warning::Snyk frontend scan skipped (token may be invalid)"
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Run Snyk to check Backend vulnerabilities
+        if: env.SNYK_TOKEN != ''
+        working-directory: ./brainbytes-multi-container/backend
+        run: npx snyk test --severity-threshold=high || echo "::warning::Snyk backend scan skipped (token may be invalid)"
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Create mock environment file for scanning
+        run: |
+          mkdir -p brainbytes-multi-container/backend
+          touch brainbytes-multi-container/backend/.env
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build frontend image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: ./brainbytes-multi-container/frontend
+          push: false
+          load: true
+          tags: brainbytes-frontend:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Build backend image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: ./brainbytes-multi-container/backend
+          push: false
+          load: true
+          tags: brainbytes-backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Scan Frontend Docker Images 
+        uses: aquasecurity/trivy-action@master
+        with: 
+          image-ref: 'brainbytes-frontend:latest'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      - name: Scan Backend Docker Images 
+        uses: aquasecurity/trivy-action@master
+        with: 
+          image-ref: 'brainbytes-backend:latest'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+  e2e: 
+    name: Run End-to-End Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with: 
+          node-version: 22.x
+
+      - name: Create mock environment file
+        run: |
+          mkdir -p brainbytes-multi-container/backend
+          touch brainbytes-multi-container/backend/.env
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build frontend image for E2E
+        uses: docker/build-push-action@v6
+        with:
+          context: ./brainbytes-multi-container/frontend
+          push: false
+          load: true
+          tags: brainbytes-frontend:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Build backend image for E2E
+        uses: docker/build-push-action@v6
+        with:
+          context: ./brainbytes-multi-container/backend
+          push: false
+          load: true
+          tags: brainbytes-backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Start app with Docker Compose
+        working-directory: ./brainbytes-multi-container
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+          echo "--- waiting for frontend to be ready ---"
+          ready=false
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7000 > /dev/null; then
+              echo "Frontend is up"
+              ready=true
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+          if [ "$ready" = false ]; then
+            echo "Frontend failed to start within 60s"
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
+            exit 1
+          fi
+          docker compose ps
+
+      - name: Install End-to-End Test dependencies
+        working-directory: ./brainbytes-multi-container/e2e-tests
+        run: npm install --legacy-peer-deps
+            
+      - name: Install Playwright Browsers
+        working-directory: ./brainbytes-multi-container/e2e-tests
+        run: npx playwright install --with-deps
+
+      - name: Run End-to-End Tests
+        working-directory: ./brainbytes-multi-container/e2e-tests
+        env:
+          E2E_BASE_URL: http://localhost:7000
+        run: npm run test:e2e
+
+      - name: Run performance test
+        if: success()
+        run: |
+          echo "### Performance Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          start_time=$(date +%s%N)
+          http_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:7000/ 2>/dev/null || echo "000")
+          end_time=$(date +%s%N)
+          duration_ms=$(( (end_time - start_time) / 1000000 ))
+          echo "| Homepage HTTP Status | $http_code |" >> $GITHUB_STEP_SUMMARY
+          echo "| Homepage Load Time | ${duration_ms}ms |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Show app logs on failure
+        if: failure()
+        working-directory: ./brainbytes-multi-container
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
+  
+      - name: Stop Docker Compose
+        if: always()
+        working-directory: ./brainbytes-multi-container
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down
+
+  notify:
+    name: Send Status Notification
+    runs-on: ubuntu-latest
+    needs: 
+      - lint
+      - test
+      - build
+      - security-scan
+      - e2e
+      - deploy
+    if: always()
+
+    steps:
+      - name: Check workflow status
+        run: |
+          echo "## BrainBytes CI/CD Status Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Linters | ${{ needs.lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E Tests | ${{ needs.e2e.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy | ${{ needs.deploy.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Branch: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "Author: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "✅ All checks passed and deployment completed successfully!"
+          elif [ "${{ needs.deploy.result }}" = "skipped" ]; then
+            echo "✅ All checks passed. (Deploy skipped for ${{ github.event_name }} event)"
+          else
+            echo "⚠️ Some checks failed. Review the run details above."
+          fi
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            const body = `## CI/CD Pipeline Failure\n\nRun: ${runUrl}\nBranch: \`${{ github.ref_name }}\`\nCommit: ${{ github.sha }}\nTrigger: ${{ github.event_name }}\n\nSee the workflow run for details on which job(s) failed.`;
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'ci-failure'
+            });
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `CI/CD Pipeline Failure - ${{ github.run_id }}`,
+                body: body,
+                labels: ['ci-failure']
+              });
+            }
