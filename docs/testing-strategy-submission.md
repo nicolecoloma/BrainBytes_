@@ -168,13 +168,10 @@ End-to-end testing validates application behavior in a production-like environme
 | **ESLint Errors in New Tests**        | Unused imports and parameters triggered lint failures.              | Removed unnecessary variables and imports.                                                                              | Local linting completes without `no-unused-vars` errors.    |
 | **Frontend Testing Dependencies**     | Missing Babel and React testing packages prevented JSX compilation. | Installed `@testing-library/react`, `babel-jest`, and `@babel/preset-react`.                                            | Jest executes JSX test files successfully.                  |
 
----
 
 
 
 
-
----
 
 # Test Results Summary
 
