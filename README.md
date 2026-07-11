@@ -1,4 +1,4 @@
-# BrainBytes
+# BrainBytes AI Tutoring Platform
 
 Project Overview
 
